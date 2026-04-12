@@ -1,0 +1,29 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cfworker-vecdocsrv",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-13",
+  "observability": {
+    "enabled": true
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "vectorize": [
+    {
+      "binding": "TEXT_DOCS",
+      "index_name": "text-docs"
+    }
+  ],
+  "vars": {
+    "DEFAULT_NAMESPACE_ID": "ns_user_f416f9c53576",
+    "DEFAULT_VECTOR_LIMIT": "40",
+    "DEFAULT_RESULT_LIMIT": "10",
+    "DEFAULT_MIN_RERANK_SCORE": "0.15",
+    "NBSS_BASE_URL": "http://127.0.0.1:8080/nbss",
+    "ENABLE_NBSS_HYDRATE": "false"
+  }
+}
