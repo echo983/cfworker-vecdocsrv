@@ -45,6 +45,12 @@ interface DetailRequest {
   hydrateBody?: boolean;
 }
 
+interface CreateRequest {
+  namespaceId?: string;
+  title?: string;
+  body?: string;
+}
+
 interface TextDocMeta {
   createdAt?: string;
   docKind?: string;
@@ -113,6 +119,10 @@ function asNonNegativeNumber(value: unknown, fallback: number): number {
   return n;
 }
 
+function asTrimmedString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function isTruthy(value: string | undefined): boolean {
   return value === "1" || value === "true" || value === "yes";
 }
@@ -132,6 +142,43 @@ async function embedQuery(query: string, env: Env): Promise<number[]> {
     throw new Error("embedding_failed");
   }
   return vector;
+}
+
+async function embedText(text: string, env: Env): Promise<number[]> {
+  const result = (await env.AI.run(EMBED_MODEL, { text: [text] })) as EmbeddingResponse;
+  const vector = result?.data?.[0];
+  if (!Array.isArray(vector) || vector.length === 0) {
+    throw new Error("embedding_failed");
+  }
+  return vector;
+}
+
+function generateNoteId(): string {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return `note_${Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+function utf8Bytes(text: string): Uint8Array {
+  return new TextEncoder().encode(text);
+}
+
+function truncateUtf8Text(text: string, maxBytes: number): string {
+  if (utf8Bytes(text).byteLength <= maxBytes) {
+    return text;
+  }
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    const candidate = text.slice(0, mid);
+    if (utf8Bytes(candidate).byteLength <= maxBytes) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return text.slice(0, low).trimEnd();
 }
 
 function normalizeMetadata(input: unknown): TextDocMetadata {
@@ -262,6 +309,42 @@ async function fetchNbssObject(fid: string, env: Env): Promise<Response> {
   return fetch(`${nbssBase}/${hex}`);
 }
 
+async function putNbssObject(content: string, env: Env): Promise<string> {
+  const body = utf8Bytes(content);
+  if (env.VPC_SERVICE) {
+    const response = await env.VPC_SERVICE.fetch("http://nbss.internal/nbss", {
+      method: "PUT",
+      body
+    });
+    if (!response.ok) {
+      throw new Error(`nbss_put_http_${response.status}`);
+    }
+    const payload = await response.json() as { fid?: string };
+    const fid = asTrimmedString(payload?.fid);
+    if (!fid) {
+      throw new Error("nbss_put_missing_fid");
+    }
+    return `NBSS:${fid}`;
+  }
+  const nbssBase = (env.NBSS_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  if (!nbssBase.startsWith("http")) {
+    throw new Error("nbss_not_configured");
+  }
+  const response = await fetch(nbssBase, {
+    method: "PUT",
+    body
+  });
+  if (!response.ok) {
+    throw new Error(`nbss_put_http_${response.status}`);
+  }
+  const payload = await response.json() as { fid?: string };
+  const fid = asTrimmedString(payload?.fid);
+  if (!fid) {
+    throw new Error("nbss_put_missing_fid");
+  }
+  return `NBSS:${fid}`;
+}
+
 async function buildDetailItem(
   id: string,
   namespaceId: string,
@@ -296,6 +379,95 @@ async function buildDetailItem(
     nbssfid: item.nbssfid,
     meta: item.meta
   };
+}
+
+async function handleCreate(request: Request, env: Env): Promise<Response> {
+  const payload = await readJson<CreateRequest>(request);
+  if (!payload) {
+    return json(400, { ok: false, error: "invalid_json" });
+  }
+
+  const namespaceId = asTrimmedString(payload.namespaceId ?? env.DEFAULT_NAMESPACE_ID);
+  if (!namespaceId) {
+    return json(400, { ok: false, error: "missing_namespace_id" });
+  }
+
+  const title = asTrimmedString(payload.title);
+  const body = typeof payload.body === "string" ? payload.body.trim() : "";
+  if (!title) {
+    return json(400, { ok: false, error: "missing_title" });
+  }
+  if (!body) {
+    return json(400, { ok: false, error: "missing_body" });
+  }
+
+  const id = generateNoteId();
+  const createdAt = new Date().toISOString();
+  const inlineByteLimit = 8 * 1024;
+
+  let text = body;
+  let nbssfid = "";
+  if (utf8Bytes(body).byteLength > inlineByteLimit) {
+    nbssfid = await putNbssObject(body, env);
+    text = truncateUtf8Text(body, inlineByteLimit - 128);
+  }
+
+  const metadata: TextDocMetadata = {
+    text,
+    namespaceId,
+    nbssfid,
+    meta: {
+      createdAt,
+      docKind: "raw_text",
+      sourceType: "manual_note",
+      title,
+      sourceId: id
+    }
+  };
+  const vectorMetadata: Record<string, VectorizeVectorMetadata> = {
+    text: metadata.text ?? "",
+    namespaceId: metadata.namespaceId ?? "",
+    nbssfid: metadata.nbssfid ?? "",
+    meta: {
+      createdAt: metadata.meta?.createdAt ?? "",
+      docKind: metadata.meta?.docKind ?? "",
+      sourceType: metadata.meta?.sourceType ?? "",
+      title: metadata.meta?.title ?? "",
+      sourceId: metadata.meta?.sourceId ?? ""
+    }
+  };
+
+  const vector = await embedText(`${title}\n\n${body}`, env);
+  await env.TEXT_DOCS.upsert([
+    {
+      id,
+      values: vector,
+      metadata: vectorMetadata
+    }
+  ]);
+
+  const item: DetailItem = {
+    id,
+    namespaceId,
+    text,
+    bodyText: body,
+    bodySource: nbssfid ? "nbss" : "inline",
+    nbssfid,
+    meta: {
+      createdAt,
+      docKind: "raw_text",
+      sourceType: "manual_note",
+      title,
+      sourceId: id
+    }
+  };
+
+  return json(201, {
+    ok: true,
+    service: "cfworker-vecdocsrv",
+    index: "text-docs",
+    item
+  });
 }
 
 async function handleSearch(request: Request, env: Env): Promise<Response> {
@@ -403,6 +575,19 @@ export default {
         return await handleSearch(request, env);
       } catch (error) {
         console.error("text-doc search failed", error);
+        return json(500, {
+          ok: false,
+          error: "internal_error",
+          detail: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/v1/text-docs") {
+      try {
+        return await handleCreate(request, env);
+      } catch (error) {
+        console.error("text-doc create failed", error);
         return json(500, {
           ok: false,
           error: "internal_error",
