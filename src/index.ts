@@ -37,6 +37,11 @@ interface SearchRequest {
   hydrateBody?: boolean;
 }
 
+interface DetailRequest {
+  namespaceId?: string;
+  hydrateBody?: boolean;
+}
+
 interface TextDocMeta {
   createdAt?: string;
   docKind?: string;
@@ -60,6 +65,16 @@ interface SearchItem {
   text: string;
   bodyText?: string;
   bodySource?: "inline" | "nbss";
+  nbssfid: string;
+  meta: TextDocMeta;
+}
+
+interface DetailItem {
+  id: string;
+  namespaceId: string;
+  text: string;
+  bodyText: string;
+  bodySource: "inline" | "nbss";
   nbssfid: string;
   meta: TextDocMeta;
 }
@@ -221,6 +236,42 @@ async function maybeHydrateBody(items: SearchItem[], hydrateBody: boolean, env: 
   }
 }
 
+async function buildDetailItem(
+  id: string,
+  namespaceId: string,
+  hydrateBody: boolean,
+  env: Env
+): Promise<DetailItem | null> {
+  const matches = await env.TEXT_DOCS.getByIds([id]);
+  const match = matches[0];
+  if (!match) return null;
+  const metadata = normalizeMetadata(match.metadata);
+  if ((metadata.namespaceId ?? "") !== namespaceId) {
+    return null;
+  }
+
+  const item: SearchItem = {
+    id: match.id,
+    score: null,
+    rerankScore: null,
+    namespaceId: metadata.namespaceId ?? "",
+    text: metadata.text ?? "",
+    nbssfid: metadata.nbssfid ?? "",
+    meta: metadata.meta ?? {}
+  };
+  await maybeHydrateBody([item], hydrateBody, env);
+
+  return {
+    id: item.id,
+    namespaceId: item.namespaceId,
+    text: item.text,
+    bodyText: item.bodyText ?? item.text,
+    bodySource: item.bodySource ?? "inline",
+    nbssfid: item.nbssfid,
+    meta: item.meta
+  };
+}
+
 async function handleSearch(request: Request, env: Env): Promise<Response> {
   const payload = await readJson<SearchRequest>(request);
   if (!payload) {
@@ -266,6 +317,36 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
   });
 }
 
+async function handleDetail(request: Request, env: Env, id: string): Promise<Response> {
+  const payload = request.method === "POST" ? await readJson<DetailRequest>(request) : null;
+  const url = new URL(request.url);
+  const namespaceId = String(
+    payload?.namespaceId ??
+    url.searchParams.get("namespaceId") ??
+    env.DEFAULT_NAMESPACE_ID ??
+    ""
+  ).trim();
+  if (!namespaceId) {
+    return json(400, { ok: false, error: "missing_namespace_id" });
+  }
+
+  const hydrateBody = request.method === "POST"
+    ? Boolean(payload?.hydrateBody)
+    : isTruthy(url.searchParams.get("hydrateBody") ?? undefined);
+
+  const item = await buildDetailItem(id, namespaceId, hydrateBody, env);
+  if (!item) {
+    return json(404, { ok: false, error: "not_found" });
+  }
+
+  return json(200, {
+    ok: true,
+    service: "cfworker-vecdocsrv",
+    index: "text-docs",
+    item
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -283,6 +364,20 @@ export default {
         return await handleSearch(request, env);
       } catch (error) {
         console.error("text-doc search failed", error);
+        return json(500, {
+          ok: false,
+          error: "internal_error",
+          detail: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+
+    const detailMatch = url.pathname.match(/^\/api\/v1\/text-docs\/([^/]+)$/);
+    if (detailMatch && (request.method === "GET" || request.method === "POST")) {
+      try {
+        return await handleDetail(request, env, decodeURIComponent(detailMatch[1]));
+      } catch (error) {
+        console.error("text-doc detail failed", error);
         return json(500, {
           ok: false,
           error: "internal_error",
