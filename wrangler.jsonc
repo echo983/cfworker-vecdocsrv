@@ -18,6 +18,13 @@
       "index_name": "text-docs"
     }
   ],
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "086f72e77945412aa4306f77db29c152",
+      "localConnectionString": "<LOCAL_CONNECTION_STRING_FOR_LOCAL_DEVELOPMENT_HERE>"
+    }
+  ],
   "vpc_services": [
     {
       "binding": "VPC_SERVICE",
