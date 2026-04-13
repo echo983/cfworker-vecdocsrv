@@ -135,29 +135,14 @@ async function queryVectorize(
   vectorLimit: number,
   env: Env
 ): Promise<VectorMatch[]> {
-  const options = {
+  const result = await env.TEXT_DOCS.query(queryVector, {
     topK: vectorLimit,
-    returnMetadata: "all" as const,
-    filter: { namespaceId }
-  };
-
-  try {
-    const result = await env.TEXT_DOCS.query(queryVector, options);
-    return (result.matches ?? []) as VectorMatch[];
-  } catch (error) {
-    console.warn("vectorize query with namespace filter failed, retrying without server-side filter", {
-      namespaceId,
-      error: error instanceof Error ? error.message : String(error)
-    });
-    const result = await env.TEXT_DOCS.query(queryVector, {
-      topK: vectorLimit,
-      returnMetadata: "all" as const
-    });
-    return ((result.matches ?? []) as VectorMatch[]).filter((item) => {
-      const metadata = normalizeMetadata(item.metadata);
-      return metadata.namespaceId === namespaceId;
-    });
-  }
+    returnMetadata: "all" as const
+  });
+  return ((result.matches ?? []) as VectorMatch[]).filter((item) => {
+    const metadata = normalizeMetadata(item.metadata);
+    return metadata.namespaceId === namespaceId;
+  });
 }
 
 function buildRerankContext(match: VectorMatch): string {
