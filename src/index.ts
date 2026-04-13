@@ -34,7 +34,9 @@ interface SearchRequest {
   namespaceId?: string;
   vectorLimit?: number;
   limit?: number;
+  page?: number;
   minRerankScore?: number;
+  bodyMode?: "all" | "inline" | "nbss";
   hydrateBody?: boolean;
 }
 
@@ -69,6 +71,8 @@ interface SearchItem {
   nbssfid: string;
   meta: TextDocMeta;
 }
+
+type BodyMode = "all" | "inline" | "nbss";
 
 interface DetailItem {
   id: string;
@@ -202,6 +206,16 @@ async function rerankMatches(query: string, matches: VectorMatch[], limit: numbe
   return output;
 }
 
+function matchesBodyMode(item: SearchItem, bodyMode: BodyMode): boolean {
+  if (bodyMode === "inline") {
+    return !item.nbssfid;
+  }
+  if (bodyMode === "nbss") {
+    return Boolean(item.nbssfid);
+  }
+  return true;
+}
+
 async function maybeHydrateBody(items: SearchItem[], hydrateBody: boolean, env: Env): Promise<void> {
   if (!hydrateBody || !isTruthy(env.ENABLE_NBSS_HYDRATE)) {
     for (const item of items) {
@@ -300,16 +314,24 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
     return json(400, { ok: false, error: "missing_namespace_id" });
   }
 
-  const vectorLimit = asPositiveInt(payload.vectorLimit ?? env.DEFAULT_VECTOR_LIMIT, 40, 100);
+  const page = asPositiveInt(payload.page, 1, 50);
   const limit = asPositiveInt(payload.limit ?? env.DEFAULT_RESULT_LIMIT, 10, 20);
+  const offset = (page - 1) * limit;
+  const desiredCount = offset + limit;
+  const requestedVectorLimit = asPositiveInt(payload.vectorLimit ?? env.DEFAULT_VECTOR_LIMIT, 40, 50);
+  const vectorLimit = Math.max(requestedVectorLimit, Math.min(Math.max(desiredCount * 4, 40), 50));
   const minRerankScore = asNonNegativeNumber(payload.minRerankScore ?? env.DEFAULT_MIN_RERANK_SCORE, 0.15);
+  const bodyMode: BodyMode = payload.bodyMode === "inline" || payload.bodyMode === "nbss" ? payload.bodyMode : "all";
   const hydrateBody = Boolean(payload.hydrateBody);
 
   const queryVector = await embedQuery(query, env);
   const matches = await queryVectorize(queryVector, namespaceId, vectorLimit, env);
-  const reranked = await rerankMatches(query, matches, limit, env);
-  const filtered = reranked.filter((item) => (item.rerankScore ?? 0) >= minRerankScore);
-  await maybeHydrateBody(filtered, hydrateBody, env);
+  const reranked = await rerankMatches(query, matches, matches.length, env);
+  const filtered = reranked.filter((item) =>
+    (item.rerankScore ?? 0) >= minRerankScore && matchesBodyMode(item, bodyMode)
+  );
+  const paged = filtered.slice(offset, offset + limit);
+  await maybeHydrateBody(paged, hydrateBody, env);
 
   return json(200, {
     ok: true,
@@ -317,15 +339,20 @@ async function handleSearch(request: Request, env: Env): Promise<Response> {
     index: "text-docs",
     namespaceId,
     query,
+    page,
+    limit,
     vectorLimit,
     vectorHitCount: matches.length,
-    resultCount: filtered.length,
+    resultCount: paged.length,
+    totalCount: filtered.length,
+    hasMore: offset + paged.length < filtered.length,
     minRerankScore,
+    bodyMode,
     models: {
       embedding: EMBED_MODEL,
       reranker: RERANK_MODEL
     },
-    items: filtered
+    items: paged
   });
 }
 
