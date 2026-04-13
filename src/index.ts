@@ -6,6 +6,7 @@ type JsonRecord = Record<string, unknown>;
 export interface Env {
   AI: Ai;
   TEXT_DOCS: VectorizeIndex;
+  VPC_SERVICE?: Fetcher;
   DEFAULT_NAMESPACE_ID?: string;
   DEFAULT_VECTOR_LIMIT?: string;
   DEFAULT_RESULT_LIMIT?: string;
@@ -209,16 +210,14 @@ async function maybeHydrateBody(items: SearchItem[], hydrateBody: boolean, env: 
     }
     return;
   }
-  const nbssBase = (env.NBSS_BASE_URL ?? "").trim().replace(/\/+$/, "");
   for (const item of items) {
-    if (!item.nbssfid || !nbssBase.startsWith("http")) {
+    if (!item.nbssfid) {
       item.bodyText = item.text;
       item.bodySource = "inline";
       continue;
     }
-    const hex = item.nbssfid.replace(/^NBSS:/i, "");
     try {
-      const response = await fetch(`${nbssBase}/${hex}`);
+      const response = await fetchNbssObject(item.nbssfid, env);
       if (!response.ok) {
         throw new Error(`nbss_http_${response.status}`);
       }
@@ -234,6 +233,19 @@ async function maybeHydrateBody(items: SearchItem[], hydrateBody: boolean, env: 
       item.bodySource = "inline";
     }
   }
+}
+
+async function fetchNbssObject(fid: string, env: Env): Promise<Response> {
+  const hex = fid.replace(/^NBSS:/i, "");
+  const path = `/nbss/${hex}`;
+  if (env.VPC_SERVICE) {
+    return env.VPC_SERVICE.fetch(`http://nbss.internal${path}`);
+  }
+  const nbssBase = (env.NBSS_BASE_URL ?? "").trim().replace(/\/+$/, "");
+  if (!nbssBase.startsWith("http")) {
+    throw new Error("nbss_not_configured");
+  }
+  return fetch(`${nbssBase}/${hex}`);
 }
 
 async function buildDetailItem(

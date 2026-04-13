@@ -18,12 +18,19 @@
       "index_name": "text-docs"
     }
   ],
+  "vpc_services": [
+    {
+      "binding": "VPC_SERVICE",
+      "service_id": "019d43fc-4d5e-73d2-8049-2c6b028a4382",
+      "remote": true
+    }
+  ],
   "vars": {
     "DEFAULT_NAMESPACE_ID": "ns_user_f416f9c53576",
     "DEFAULT_VECTOR_LIMIT": "40",
     "DEFAULT_RESULT_LIMIT": "10",
     "DEFAULT_MIN_RERANK_SCORE": "0.15",
     "NBSS_BASE_URL": "http://127.0.0.1:8080/nbss",
-    "ENABLE_NBSS_HYDRATE": "false"
+    "ENABLE_NBSS_HYDRATE": "true"
   }
 }
