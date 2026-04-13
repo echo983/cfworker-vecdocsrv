@@ -154,7 +154,10 @@ let recentNotesSchemaReady = false;
 function json(status: number, payload: JsonRecord): Response {
   return new Response(JSON.stringify(payload, null, 2), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8" }
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store"
+    }
   });
 }
 
@@ -566,24 +569,27 @@ async function listRecentNotes(request: RecentRequest, env: Env): Promise<{
   const tags = sanitizeTags(request.tags);
 
   return withPgClient(env, async (client) => {
-    const result = await client.query<RecentNoteRow>(
-      `
-        SELECT id, namespace_id, text_preview, nbssfid, created_at, source_type, title, tags, auto_generated
-        FROM recent_notes
-        WHERE namespace_id = $1
-          AND ($2::timestamptz IS NULL OR (created_at, id) < ($2::timestamptz, $3::text))
-          AND ($4::text[] IS NULL OR tags ?& $4::text[])
-        ORDER BY created_at DESC, id DESC
-        LIMIT $5
-      `,
-      [
-        namespaceId,
-        cursor?.createdAt ?? null,
-        cursor?.id ?? null,
-        tags.length ? tags : null,
-        limit + 1
-      ]
-    );
+    const values: unknown[] = [namespaceId];
+    let sql = `
+      SELECT id, namespace_id, text_preview, nbssfid, created_at, source_type, title, tags, auto_generated
+      FROM recent_notes
+      WHERE namespace_id = $1
+    `;
+
+    if (cursor) {
+      values.push(cursor.createdAt, cursor.id);
+      sql += ` AND (created_at, id) < ($${values.length - 1}::timestamptz, $${values.length}::text)`;
+    }
+
+    if (tags.length) {
+      values.push(tags);
+      sql += ` AND tags ?& $${values.length}::text[]`;
+    }
+
+    values.push(limit + 1);
+    sql += ` ORDER BY created_at DESC, id DESC LIMIT $${values.length}`;
+
+    const result = await client.query<RecentNoteRow>(sql, values);
 
     const rows = result.rows.slice(0, limit);
     const items = rows.map(mapRecentRow);
